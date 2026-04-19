@@ -1,0 +1,21 @@
+[build]
+target-dir = "target"
+jobs = 0
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+incremental = false
+
+[target.aarch64-linux-android]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.armv7-linux-androideabi]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.x86_64-linux-android]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

@@ -1,0 +1,36 @@
+[package]
+name = "rust_lib_taskdroid"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata.cargokit]
+profile = "release"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 256
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1.0.100"
+flutter_rust_bridge = "=2.11.1"
+taskchampion = "2.0.3"
+uuid = "1.18.1"
+chrono = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.49.0", features = ["full"] }
+tracing = "0.1.41"
+
+[build-dependencies]
+flutter_rust_bridge_codegen = "=2.11.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

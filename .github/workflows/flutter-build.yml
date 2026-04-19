@@ -1,0 +1,117 @@
+name: Android Build
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: false
+          haskell: true
+          dotnet: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+
+      - name: Install Required Android Build Tools
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;29.0.3"
+
+      - name: Setup Rust for Android
+        run: |
+          rustup target add aarch64-linux-android
+          NDK_PATH=$(find $ANDROID_HOME/ndk -name "ndk-build" | head -n1 | xargs dirname)
+          echo "NDK_PATH=$NDK_PATH" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> $GITHUB_ENV
+          echo "CC_aarch64-linux-android=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> $GITHUB_ENV
+
+      - name: Cache all build artifacts
+        uses: actions/cache@v4
+        id: build-cache
+        with:
+          path: |
+            ~/.cargo/
+            build/rust_lib_*/
+            /opt/hostedtoolcache/flutter
+            ${{ env.PUB_CACHE }}
+            .dart_tool/
+            android/.gradle/
+          key: full-build-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/*.rs', 'pubspec.lock', 'android/build.gradle') }}
+          restore-keys: |
+            full-build-${{ runner.os }}-
+
+      - name: Add build-tools to PATH
+        run: |
+          BUILD_TOOLS_VERSION=$(ls $ANDROID_HOME/build-tools | sort -V | tail -n1)
+          echo "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION" >> $GITHUB_PATH
+
+      - name: Build Debug APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: ./build.sh --debug
+
+      - name: Upload Debug APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+
+      - name: Build & Sign Release APKs
+        if: startsWith(github.ref, 'refs/tags/')
+        run: ./build.sh --release --split --sign
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Upload Signed Release APKs
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release-apks
+          path: |
+            taskdroid-*.apk
+          if-no-files-found: error
+
+  create-release:
+    name: Create Release & Upload APKs
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Signed APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-release-apks
+          path: ./
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            taskdroid-*.apk

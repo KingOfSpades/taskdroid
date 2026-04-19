@@ -1,0 +1,41 @@
+name: taskdroid
+description: "A task management app built with Flutter and Rust."
+version: 0.1.0
+publish_to: 'none'
+
+environment:
+  sdk: ^3.10.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  provider: ^6.1.5+1
+  shared_preferences: ^2.5.3
+  flutter_secure_storage: ^9.2.4
+  path_provider: ^2.1.5
+  google_fonts: ^6.3.3
+  http: ^1.6.0
+  uuid: ^4.5.2
+  freezed_annotation: ^3.1.0
+  cupertino_icons: ^1.0.8
+  rust_lib_taskdroid:
+    path: rust_builder
+  flutter_rust_bridge: 2.11.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+  # integration_test:
+  #   sdk: flutter
+  freezed: ^3.2.3
+  build_runner: ^2.10.4
+
+flutter:
+  uses-material-design: true
+
+cargokit:
+  android:
+    profile: release
