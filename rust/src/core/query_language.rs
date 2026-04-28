@@ -71,6 +71,8 @@ enum Flag {
     Waiting,
 }
 
+const TASKWARRIOR_DEFAULT_DUE_DAYS: i64 = 7;
+
 pub fn matches_query(task: &taskchampion::Task, query: &str) -> bool {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -180,7 +182,8 @@ fn evaluate_flag(task: &taskchampion::Task, flag: Flag, now: DateTime<Utc>) -> b
                 && !is_scheduled_future(task, now)
         }
         Flag::Active => task.is_active(),
-        Flag::Due => read_date_field(task, DateField::Due).is_some_and(|date| date <= now),
+        Flag::Due => read_date_field(task, DateField::Due)
+            .is_some_and(|date| date <= now + Duration::days(TASKWARRIOR_DEFAULT_DUE_DAYS)),
         Flag::DueToday => read_date_field(task, DateField::Due)
             .is_some_and(|date| date.date_naive() == now.date_naive()),
         Flag::Overdue => read_date_field(task, DateField::Due).is_some_and(|date| date < now),

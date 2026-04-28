@@ -1,5 +1,7 @@
 import 'package:taskdroid/src/rust/api.dart';
 
+const int taskwarriorDefaultDueDays = 7;
+
 extension TaskVirtualFlags on TaskView {
   bool get hasProject => project != null && project!.trim().isNotEmpty;
 
@@ -23,7 +25,9 @@ extension TaskVirtualFlags on TaskView {
   bool isDue(DateTime nowUtc) {
     final dueDate = dueDateUtc;
     if (dueDate == null) return false;
-    return !dueDate.isAfter(nowUtc);
+    return !dueDate.isAfter(
+      nowUtc.add(const Duration(days: taskwarriorDefaultDueDays)),
+    );
   }
 
   bool isDueToday(DateTime nowUtc) {

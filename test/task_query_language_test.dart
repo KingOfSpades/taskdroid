@@ -67,6 +67,15 @@ void main() {
       expect(query.matches(task, _now), isTrue);
     });
 
+    test('+DUE uses Taskwarrior default seven day window', () {
+      final query = parseTaskQuery('+DUE', _now);
+      final dueSoon = _task(due: '2026-01-16T12:00:00Z');
+      final dueLater = _task(due: '2026-01-18T12:00:01Z');
+
+      expect(query.matches(dueSoon, _now), isTrue);
+      expect(query.matches(dueLater, _now), isFalse);
+    });
+
     test('ready flag excludes future scheduled tasks', () {
       final query = parseTaskQuery('+ready', _now);
       final task = _task(
