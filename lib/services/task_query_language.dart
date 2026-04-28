@@ -1,4 +1,5 @@
 import 'package:taskdroid/models/task_virtual_flags.dart';
+import 'package:taskdroid/services/task_query_syntax.dart';
 import 'package:taskdroid/src/rust/api.dart';
 
 enum TaskQueryDateField {
@@ -438,19 +439,7 @@ class _TaskQueryParser {
 }
 
 String _canonicalKey(String key) {
-  switch (key) {
-    case 'pro':
-    case 'proj':
-      return 'project';
-    case 'pri':
-      return 'priority';
-    case 'stat':
-      return 'status';
-    case 'id':
-      return 'uuid';
-    default:
-      return key;
-  }
+  return TaskQuerySyntax.canonicalKey(key);
 }
 
 bool _usesExplicitStatusScope(TaskQueryExpr? expr, {bool isNegated = false}) {

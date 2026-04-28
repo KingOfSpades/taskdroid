@@ -1,9 +1,11 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:taskdroid/models/filter_tab.dart';
 import 'package:taskdroid/providers/app_state.dart';
 import 'package:taskdroid/providers/profile_state.dart';
 import 'package:taskdroid/providers/task_state.dart';
+import 'package:taskdroid/services/task_query_autocomplete.dart';
 import 'package:taskdroid/services/task_query_language.dart';
 import 'package:taskdroid/src/rust/api.dart';
 import 'package:taskdroid/views/onboarding.dart';
@@ -197,6 +199,12 @@ class _HomePageState extends State<HomePage>
           _BroadResultsBar(
             resultCount: taskState.filteredTasks.length,
             isSearchVisible: _isSearchVisible,
+            hasActiveFilters:
+                taskState.searchQuery.trim().isNotEmpty ||
+                taskState.includeTags.isNotEmpty ||
+                taskState.excludeTags.isNotEmpty ||
+                taskState.includeProjects.isNotEmpty ||
+                taskState.excludeProjects.isNotEmpty,
             onToggleSearch: () {
               setState(() {
                 _isSearchVisible = !_isSearchVisible;
@@ -216,21 +224,24 @@ class _HomePageState extends State<HomePage>
                 _isSearchVisible = !_isSearchVisible;
               });
             },
-            filterCount:
-                taskState.includeTags.length +
-                taskState.excludeTags.length +
-                taskState.includeProjects.length +
-                taskState.excludeProjects.length,
+            hasActiveFilters:
+                taskState.searchQuery.trim().isNotEmpty ||
+                taskState.includeTags.isNotEmpty ||
+                taskState.excludeTags.isNotEmpty ||
+                taskState.includeProjects.isNotEmpty ||
+                taskState.excludeProjects.isNotEmpty,
           ),
         AnimatedSize(
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeInOut,
           alignment: Alignment.topCenter,
           child: _isSearchVisible
-              ? _SearchAndFiltersRow(
+              ? TaskSearchAndFiltersRow(
                   searchQuery: taskState.searchQuery,
                   parsedQuery: taskState.parsedSearchQuery,
                   onSearchChanged: taskState.setSearchQuery,
+                  allTags: taskState.allTags,
+                  allProjects: taskState.allProjects,
                   includeTags: taskState.includeTags,
                   excludeTags: taskState.excludeTags,
                   tagMatchMode: taskState.tagMatchMode,
@@ -915,11 +926,13 @@ class _IncludeExcludeSelection<T> {
 
 enum _FilterSelectionState { none, include, exclude }
 
-class _SearchAndFiltersRow extends StatefulWidget {
-  const _SearchAndFiltersRow({
+class TaskSearchAndFiltersRow extends StatefulWidget {
+  const TaskSearchAndFiltersRow({
     required this.searchQuery,
     required this.parsedQuery,
     required this.onSearchChanged,
+    required this.allTags,
+    required this.allProjects,
     required this.includeTags,
     required this.excludeTags,
     required this.tagMatchMode,
@@ -938,6 +951,8 @@ class _SearchAndFiltersRow extends StatefulWidget {
   final String searchQuery;
   final TaskQuery parsedQuery;
   final ValueChanged<String> onSearchChanged;
+  final Set<String> allTags;
+  final Set<String> allProjects;
   final Set<String> includeTags;
   final Set<String> excludeTags;
   final FilterMatchMode tagMatchMode;
@@ -953,11 +968,17 @@ class _SearchAndFiltersRow extends StatefulWidget {
   final ValueChanged<String> onRemoveExcludedProject;
 
   @override
-  State<_SearchAndFiltersRow> createState() => _SearchAndFiltersRowState();
+  State<TaskSearchAndFiltersRow> createState() => _SearchAndFiltersRowState();
 }
 
-class _SearchAndFiltersRowState extends State<_SearchAndFiltersRow> {
+class _SearchAndFiltersRowState extends State<TaskSearchAndFiltersRow> {
+  static const int _maxSuggestionRows = 6;
+
   late TextEditingController _searchController;
+  List<TaskQuerySuggestion> _suggestions = const [];
+  bool _isUpdatingController = false;
+  Set<String> _stableTags = const {};
+  Set<String> _stableProjects = const {};
 
   static const List<String> _queryExamples = [
     '+home project:work',
@@ -967,32 +988,103 @@ class _SearchAndFiltersRowState extends State<_SearchAndFiltersRow> {
   ];
 
   void _applyExample(String suggestion) {
+    _isUpdatingController = true;
     _searchController.text = suggestion;
     _searchController.selection = TextSelection.collapsed(
       offset: suggestion.length,
     );
+    _isUpdatingController = false;
+    _refreshSuggestions();
     widget.onSearchChanged(suggestion);
+  }
+
+  void _applySuggestion(TaskQuerySuggestion suggestion) {
+    final completion = TaskQueryAutocomplete.applySuggestionToValue(
+      value: _searchController.value,
+      suggestion: suggestion,
+    );
+    _isUpdatingController = true;
+    _searchController.value = TextEditingValue(
+      text: completion.text,
+      selection: TextSelection.collapsed(offset: completion.selectionOffset),
+    );
+    _isUpdatingController = false;
+    _refreshSuggestions();
+    widget.onSearchChanged(completion.text);
   }
 
   @override
   void initState() {
     super.initState();
     _searchController = TextEditingController(text: widget.searchQuery);
+    _searchController.addListener(_handleSearchControllerChanged);
+    _captureStableSuggestionSources();
+    _suggestions = _buildSuggestions();
   }
 
   @override
-  void didUpdateWidget(covariant _SearchAndFiltersRow oldWidget) {
+  void didUpdateWidget(covariant TaskSearchAndFiltersRow oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _captureStableSuggestionSources();
     if (widget.searchQuery != _searchController.text) {
+      _isUpdatingController = true;
       _searchController.value = _searchController.value.copyWith(
         text: widget.searchQuery,
         selection: TextSelection.collapsed(offset: widget.searchQuery.length),
       );
+      _isUpdatingController = false;
+      _refreshSuggestions();
+    } else if (!setEquals(widget.allTags, oldWidget.allTags) ||
+        !setEquals(widget.allProjects, oldWidget.allProjects)) {
+      _refreshSuggestions();
+    }
+  }
+
+  void _handleSearchControllerChanged() {
+    if (_isUpdatingController) return;
+    _refreshSuggestions();
+  }
+
+  void _refreshSuggestions() {
+    final suggestions = _buildSuggestions();
+    if (!mounted) {
+      _suggestions = suggestions;
+      return;
+    }
+    setState(() {
+      _suggestions = suggestions;
+    });
+  }
+
+  List<TaskQuerySuggestion> _buildSuggestions() {
+    final effectiveTags = widget.allTags.isNotEmpty ? widget.allTags : _stableTags;
+    final effectiveProjects = widget.allProjects.isNotEmpty
+        ? widget.allProjects
+        : _stableProjects;
+    final selectionOffset = _searchController.selection.baseOffset < 0
+        ? _searchController.text.length
+        : _searchController.selection.baseOffset;
+    return TaskQueryAutocomplete.suggestionsFor(
+      query: _searchController.text,
+      selectionOffset: selectionOffset,
+      tags: effectiveTags,
+      projects: effectiveProjects,
+      limit: _maxSuggestionRows,
+    );
+  }
+
+  void _captureStableSuggestionSources() {
+    if (widget.allTags.isNotEmpty) {
+      _stableTags = Set<String>.from(widget.allTags);
+    }
+    if (widget.allProjects.isNotEmpty) {
+      _stableProjects = Set<String>.from(widget.allProjects);
     }
   }
 
   @override
   void dispose() {
+    _searchController.removeListener(_handleSearchControllerChanged);
     _searchController.dispose();
     super.dispose();
   }
@@ -1029,6 +1121,14 @@ class _SearchAndFiltersRowState extends State<_SearchAndFiltersRow> {
             ),
           ),
           if (_searchController.text.isNotEmpty) ...[
+            if (_suggestions.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              _QuerySuggestionDropdown(
+                suggestions: _suggestions,
+                iconForType: _suggestionIcon,
+                onSelected: _applySuggestion,
+              ),
+            ],
             const SizedBox(height: 8),
             Container(
               width: double.infinity,
@@ -1203,17 +1303,119 @@ class _SearchAndFiltersRowState extends State<_SearchAndFiltersRow> {
       ),
     );
   }
+
+  IconData _suggestionIcon(TaskQuerySuggestionType type) {
+    return switch (type) {
+      TaskQuerySuggestionType.operator => Icons.rule,
+      TaskQuerySuggestionType.field => Icons.short_text,
+      TaskQuerySuggestionType.value => Icons.label_outline,
+      TaskQuerySuggestionType.flag => Icons.flag_outlined,
+      TaskQuerySuggestionType.date => Icons.event_outlined,
+    };
+  }
+}
+
+class _QuerySuggestionDropdown extends StatelessWidget {
+  const _QuerySuggestionDropdown({
+    required this.suggestions,
+    required this.iconForType,
+    required this.onSelected,
+  });
+
+  final List<TaskQuerySuggestion> suggestions;
+  final IconData Function(TaskQuerySuggestionType type) iconForType;
+  final ValueChanged<TaskQuerySuggestion> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      elevation: 2,
+      color: theme.colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(12),
+      clipBehavior: Clip.antiAlias,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 280),
+        child: ListView.separated(
+          padding: EdgeInsets.zero,
+          shrinkWrap: true,
+          itemCount: suggestions.length,
+          separatorBuilder: (context, index) => Divider(
+            height: 1,
+            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+          ),
+          itemBuilder: (context, index) {
+            final suggestion = suggestions[index];
+            return InkWell(
+              onTap: () => onSelected(suggestion),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      iconForType(suggestion.type),
+                      size: 18,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            suggestion.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            suggestion.detail,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Icon(
+                      Icons.north_west,
+                      size: 14,
+                      color: theme.colorScheme.onSurfaceVariant.withValues(
+                        alpha: 0.8,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
 }
 
 class _BroadResultsBar extends StatelessWidget {
   const _BroadResultsBar({
     required this.resultCount,
     required this.isSearchVisible,
+    required this.hasActiveFilters,
     required this.onToggleSearch,
   });
 
   final int resultCount;
   final bool isSearchVisible;
+  final bool hasActiveFilters;
   final VoidCallback onToggleSearch;
 
   @override
@@ -1237,7 +1439,24 @@ class _BroadResultsBar extends StatelessWidget {
           ),
           IconButton(
             onPressed: onToggleSearch,
-            icon: Icon(isSearchVisible ? Icons.search_off : Icons.search),
+            icon: Stack(
+              children: [
+                Icon(isSearchVisible ? Icons.search_off : Icons.search),
+                if (hasActiveFilters)
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
             color: isSearchVisible
                 ? theme.colorScheme.primary
                 : theme.colorScheme.onSurfaceVariant,
@@ -1258,7 +1477,7 @@ class _QueueViewAndSearchToggleRow extends StatelessWidget {
     required this.onSelected,
     required this.isSearchVisible,
     required this.onToggleSearch,
-    required this.filterCount,
+    required this.hasActiveFilters,
   });
 
   final TaskQueueView selected;
@@ -1268,7 +1487,7 @@ class _QueueViewAndSearchToggleRow extends StatelessWidget {
   final ValueChanged<TaskQueueView> onSelected;
   final bool isSearchVisible;
   final VoidCallback onToggleSearch;
-  final int filterCount;
+  final bool hasActiveFilters;
 
   String _formatCount(int count) {
     if (count < 1000) return '$count';
@@ -1344,34 +1563,22 @@ class _QueueViewAndSearchToggleRow extends StatelessWidget {
             icon: Stack(
               children: [
                 Icon(isSearchVisible ? Icons.search_off : Icons.search),
-                if (filterCount > 0)
+                if (hasActiveFilters)
                   Positioned(
                     right: 0,
                     top: 0,
                     child: Container(
-                      padding: const EdgeInsets.all(2),
                       decoration: BoxDecoration(
                         color: theme.colorScheme.primary,
                         borderRadius: BorderRadius.circular(6),
                       ),
-                      constraints: const BoxConstraints(
-                        minWidth: 14,
-                        minHeight: 14,
-                      ),
-                      child: Text(
-                        filterCount > 9 ? '9+' : '$filterCount',
-                        style: TextStyle(
-                          color: theme.colorScheme.onPrimary,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
+                      width: 8,
+                      height: 8,
                     ),
                   ),
               ],
             ),
-            color: isSearchVisible || filterCount > 0
+            color: isSearchVisible || hasActiveFilters
                 ? theme.colorScheme.primary
                 : theme.colorScheme.onSurfaceVariant,
             tooltip: 'Toggle query',
