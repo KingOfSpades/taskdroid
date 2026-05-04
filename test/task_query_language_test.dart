@@ -100,6 +100,30 @@ void main() {
       expect(query.matches(task, _now), isTrue);
     });
 
+    test('relative month and year dates clamp to valid calendar days', () {
+      final monthQuery = parseTaskQuery('due:1m', DateTime.utc(2026, 1, 31, 12));
+      final yearQuery = parseTaskQuery('due:1y', DateTime.utc(2024, 2, 29, 12));
+
+      expect(
+        monthQuery.matches(_task(due: '2026-02-28T00:00:00Z'), _now),
+        isTrue,
+      );
+      expect(
+        yearQuery.matches(_task(due: '2025-02-28T00:00:00Z'), _now),
+        isTrue,
+      );
+    });
+
+    test('invalid date clauses fall back to text search with warning', () {
+      final query = parseTaskQuery('due:not-a-date', _now);
+      final task = _task(description: 'due:not-a-date');
+
+      expect(query.hasErrors, isFalse);
+      expect(query.issues, isNotEmpty);
+      expect(query.issues.first.message, contains('Invalid date expression'));
+      expect(query.matches(task, _now), isTrue);
+    });
+
     test('surfaces parse issues for malformed query', () {
       final query = parseTaskQuery('(project:work or', _now);
 
@@ -129,6 +153,7 @@ void main() {
 final DateTime _now = DateTime.utc(2026, 1, 10, 12);
 
 TaskView _task({
+  String description = 'Task',
   List<String>? tags,
   TaskStatus status = TaskStatus.pending,
   String? due,
@@ -142,7 +167,7 @@ TaskView _task({
 }) {
   return TaskView(
     uuid: 'uuid-1',
-    description: 'Task',
+    description: description,
     status: status,
     project: project,
     priority: null,

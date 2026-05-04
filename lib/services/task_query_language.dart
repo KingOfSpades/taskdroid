@@ -357,6 +357,18 @@ class _TaskQueryParser {
 
       final dateTerm = _parseDateTerm(key, value, _nowUtc);
       if (dateTerm != null) return dateTerm;
+      final dateKey = key.contains('.')
+          ? key.substring(0, key.indexOf('.'))
+          : key;
+      if (_dateFieldFromKey(dateKey) != null) {
+        issues.add(
+          TaskQueryIssue(
+            message: 'Invalid date expression "$value"',
+            severity: TaskQueryIssueSeverity.warning,
+          ),
+        );
+        return TaskQueryTerm.text(token);
+      }
 
       issues.add(
         TaskQueryIssue(
@@ -810,29 +822,31 @@ DateTime? _parseDateExpression(String raw, DateTime nowUtc) {
   if (relative != null) {
     final amount = int.tryParse(relative.group(1) ?? '0') ?? 0;
     final unit = relative.group(2);
-    DateTime date;
-    switch (unit) {
-      case 'd':
-        date = localNow.add(Duration(days: amount));
-      case 'w':
-        date = localNow.add(Duration(days: amount * 7));
-      case 'm':
-        final mTargetMonth = localNow.month + amount;
-        final mMaxDay = DateTime(localNow.year, mTargetMonth + 1, 0).day;
-        final mDay = localNow.day > mMaxDay ? mMaxDay : localNow.day;
-        date = DateTime(localNow.year, mTargetMonth, mDay);
-      case 'y':
-        final yTargetYear = localNow.year + amount;
-        final yMaxDay = DateTime(yTargetYear, localNow.month + 1, 0).day;
-        final yDay = localNow.day > yMaxDay ? yMaxDay : localNow.day;
-        date = DateTime(yTargetYear, localNow.month, yDay);
-      default:
-        date = localNow;
-    }
+    final date = switch (unit) {
+      'd' => localNow.add(Duration(days: amount)),
+      'w' => localNow.add(Duration(days: amount * 7)),
+      'm' => _addCalendarMonths(localNow, amount),
+      'y' => _addCalendarYears(localNow, amount),
+      _ => localNow,
+    };
     return DateTime(date.year, date.month, date.day).toUtc();
   }
 
   return DateTime.tryParse(raw)?.toUtc();
+}
+
+DateTime _addCalendarMonths(DateTime source, int amount) {
+  final targetMonth = source.month + amount;
+  final maxDay = DateTime(source.year, targetMonth + 1, 0).day;
+  final day = source.day > maxDay ? maxDay : source.day;
+  return DateTime(source.year, targetMonth, day);
+}
+
+DateTime _addCalendarYears(DateTime source, int amount) {
+  final targetYear = source.year + amount;
+  final maxDay = DateTime(targetYear, source.month + 1, 0).day;
+  final day = source.day > maxDay ? maxDay : source.day;
+  return DateTime(targetYear, source.month, day);
 }
 
 List<String> _tokenizeQuery(String input) {

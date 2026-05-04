@@ -447,8 +447,12 @@ fn parse_comparison(token: &str) -> Option<Term> {
         "=" => DateOp::On,
         _ => DateOp::On,
     };
-    let value = parse_date_expr(raw_value.trim());
-    Some(Term::Date { field, op, value })
+    let value = parse_date_expr(raw_value.trim())?;
+    Some(Term::Date {
+        field,
+        op,
+        value: Some(value),
+    })
 }
 
 fn parse_date_term(key: &str, value: &str) -> Option<Term> {
@@ -471,7 +475,7 @@ fn parse_date_term(key: &str, value: &str) -> Option<Term> {
     };
     let parsed_value = match op {
         DateOp::None | DateOp::Any => None,
-        _ => parse_date_expr(value),
+        _ => Some(parse_date_expr(value)?),
     };
     Some(Term::Date {
         field,
@@ -751,7 +755,7 @@ mod tests {
     use super::*;
 
     fn parse_expr(query: &str) -> Option<Expr> {
-        let tokens = tokenize(query);
+        let tokens = merge_colon_tokens(tokenize(query));
         let mut parser = Parser::new(tokens);
         parser.parse()
     }
@@ -771,6 +775,19 @@ mod tests {
         match expr {
             Expr::Term(Term::Flag(Flag::Someday)) => {}
             other => panic!("expected someday flag term, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invalid_date_terms_fall_back_to_text() {
+        match parse_term("due:not-a-date") {
+            Term::Text(value) => assert_eq!(value, "due:not-a-date"),
+            other => panic!("expected invalid date term to fall back to text, got {other:?}"),
+        }
+
+        match parse_term("due<=not-a-date") {
+            Term::Text(value) => assert_eq!(value, "due<=not-a-date"),
+            other => panic!("expected invalid comparison to fall back to text, got {other:?}"),
         }
     }
 
