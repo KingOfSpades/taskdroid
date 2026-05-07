@@ -114,7 +114,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       id: const Uuid().v4(),
       name: name,
       uuid: skipSync ? '' : _uuidController.text.trim(),
-      secret: skipSync ? '' : _secretController.text.trim(),
+      secret: skipSync ? '' : _secretController.text,
       serverUrl: skipSync ? '' : _serverUrlController.text.trim(),
       calendarSync: _calendarSync,
     );

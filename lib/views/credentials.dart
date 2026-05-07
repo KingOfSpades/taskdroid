@@ -85,7 +85,7 @@ class _CredentialsPageState extends State<CredentialsPage> {
       id: _editingProfileId ?? const Uuid().v4(),
       name: _nameController.text.trim(),
       uuid: _uuidController.text.trim(),
-      secret: _secretController.text.trim(),
+      secret: _secretController.text,
       serverUrl: _serverUrlController.text.trim(),
       recurrenceLimit: existingProfile?.recurrenceLimit ?? 1,
     );

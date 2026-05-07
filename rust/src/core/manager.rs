@@ -5,6 +5,7 @@ use super::utils::{
     parse_date_opt_str_strict, parse_date_opt_strict, parse_iso8601, task_snapshot_from_task,
 };
 use std::collections::HashSet;
+use std::error::Error as StdError;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -668,7 +669,7 @@ impl WorkerState {
         let replica = self.replica_mut()?;
         replica
             .sync(&mut server, false)
-            .map_err(|e| TaskError::sync(format!("Sync failed: {e}")))?;
+            .map_err(|e| TaskError::sync(format!("Sync failed: {}", error_chain(&e))))?;
         replica
             .rebuild_working_set(true)
             .map_err(|e| TaskError::storage(format!("Failed to rebuild working set: {e}")))?;
@@ -1184,6 +1185,19 @@ fn get_uda_value(task: &taskchampion::Task, key: &str) -> Option<String> {
                 None
             }
         })
+}
+
+fn error_chain(error: &dyn StdError) -> String {
+    let mut messages = vec![error.to_string()];
+    let mut current = error.source();
+    while let Some(source) = current {
+        let message = source.to_string();
+        if messages.last().is_none_or(|last| last != &message) {
+            messages.push(message);
+        }
+        current = source.source();
+    }
+    messages.join(": ")
 }
 
 fn is_virtual_tag_name(tag: &str) -> bool {
