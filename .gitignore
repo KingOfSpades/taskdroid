@@ -1,4 +1,6 @@
 # Miscellaneous
+*.apk
+*.apk.idsig
 *.class
 *.log
 *.pyc

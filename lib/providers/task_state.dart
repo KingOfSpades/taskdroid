@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:taskdroid/models/filter_tab.dart';
 import 'package:taskdroid/models/profile.dart';
 import 'package:taskdroid/models/task_virtual_flags.dart';
 import 'package:taskdroid/services/calendar_service.dart';
+import 'package:taskdroid/services/profile_storage.dart';
 import 'package:taskdroid/services/task_filter_evaluator.dart';
 import 'package:taskdroid/services/task_query_language.dart';
 import 'package:taskdroid/src/rust/api.dart';
@@ -136,11 +136,10 @@ class TaskState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final docsDir = await getApplicationDocumentsDirectory();
-      final dbDirPath = '${docsDir.path}/${profile.id}/';
+      final dbDir = await resolveProfileStorageDir(profile);
 
       _taskManager = TaskManager();
-      await _taskManager!.loadProfile(directoryPath: dbDirPath);
+      await _taskManager!.loadProfile(directoryPath: dbDir.path);
 
       await _loadFilterTabs(profile.id);
 
@@ -935,13 +934,12 @@ class TaskState extends ChangeNotifier {
     _isSyncing = true;
     notifyListeners();
     try {
-      final docsDir = await getApplicationDocumentsDirectory();
-      final dbDirPath = '${docsDir.path}/${profile.id}/';
+      final dbDir = await resolveProfileStorageDir(profile);
 
       final result = await compute(
         _syncInIsolate,
         _SyncParams(
-          directoryPath: dbDirPath,
+          directoryPath: dbDir.path,
           url: profile.serverUrl,
           clientId: profile.uuid,
           encryptionSecret: profile.secret,

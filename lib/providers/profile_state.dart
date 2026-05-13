@@ -1,10 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:taskdroid/models/profile.dart';
 import 'package:taskdroid/services/credentials_storage.dart';
+import 'package:taskdroid/services/profile_storage.dart';
 import 'package:taskdroid/src/rust/api.dart';
 
 class ProfileState extends ChangeNotifier {
@@ -35,6 +35,10 @@ class ProfileState extends ChangeNotifier {
     _currentProfileId = await CredentialsStorage.loadCurrentProfileId();
     _isLoaded = true;
     notifyListeners();
+
+    if (_profiles.isNotEmpty) {
+      await migrateLegacyProfileDirectories(_profiles);
+    }
   }
 
   Future<void> addProfile(Profile profile) async {
@@ -44,14 +48,22 @@ class ProfileState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> updateProfile(Profile updatedProfile) async {
+  Future<bool> updateProfile(Profile updatedProfile) async {
     final index = _profiles.indexWhere((p) => p.id == updatedProfile.id);
-    if (index != -1) {
-      _profiles[index] = updatedProfile;
-      await CredentialsStorage.saveProfiles(_profiles);
-      await _ensureProfileDatabase(updatedProfile);
-      notifyListeners();
+    if (index == -1) return false;
+
+    final oldProfile = _profiles[index];
+    var canProceed = true;
+    if (oldProfile.name != updatedProfile.name) {
+      canProceed = await renameProfileDirectory(oldProfile, updatedProfile);
     }
+    if (!canProceed) return false;
+
+    _profiles[index] = updatedProfile;
+    await CredentialsStorage.saveProfiles(_profiles);
+    await _ensureProfileDatabase(updatedProfile);
+    notifyListeners();
+    return true;
   }
 
   Future<void> setCalendarSyncForCurrentProfile(bool enabled) async {
@@ -95,10 +107,24 @@ class ProfileState extends ChangeNotifier {
 
   Future<void> _deleteProfileDatabase(String profileId) async {
     try {
-      final docsDir = await getApplicationDocumentsDirectory();
-      final dbDir = Directory('${docsDir.path}/$profileId/');
+      final profile = _profiles.firstWhere(
+        (p) => p.id == profileId,
+        orElse: () => Profile(
+          id: profileId,
+          name: profileId,
+          uuid: '',
+          secret: '',
+          serverUrl: '',
+        ),
+      );
+      final basePath = await getGlobalStoragePath();
+      final dbDir = await resolveProfileStorageDir(profile);
       if (await dbDir.exists()) {
         await dbDir.delete(recursive: true);
+      }
+      final legacyDir = Directory('$basePath/${profile.id}/');
+      if (await legacyDir.exists()) {
+        await legacyDir.delete(recursive: true);
       }
     } catch (e) {
       debugPrint('Failed to delete TaskChampion DB for $profileId: $e');
@@ -113,8 +139,7 @@ class ProfileState extends ChangeNotifier {
 
   Future<void> _ensureProfileDatabase(Profile profile) async {
     try {
-      final docsDir = await getApplicationDocumentsDirectory();
-      final dbDir = Directory('${docsDir.path}/${profile.id}/');
+      final dbDir = await resolveProfileStorageDir(profile);
       await dbDir.create(recursive: true);
 
       final manager = TaskManager();

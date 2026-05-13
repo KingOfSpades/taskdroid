@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:taskdroid/providers/profile_state.dart';
 import 'package:taskdroid/models/profile.dart';
+import 'package:taskdroid/services/profile_storage.dart';
 import 'package:taskdroid/widgets/app_drawer.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
@@ -80,6 +81,15 @@ class _CredentialsPageState extends State<CredentialsPage> {
     setState(() => _isLoading = true);
 
     final profileState = context.read<ProfileState>();
+    final nameError = _validateProfileName(profileState);
+    if (nameError != null) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(nameError)),
+      );
+      return;
+    }
     final existingProfile = profileState.currentProfile;
     final profile = Profile(
       id: _editingProfileId ?? const Uuid().v4(),
@@ -87,11 +97,22 @@ class _CredentialsPageState extends State<CredentialsPage> {
       uuid: _uuidController.text.trim(),
       secret: _secretController.text,
       serverUrl: _serverUrlController.text.trim(),
+      calendarSync: existingProfile?.calendarSync ?? false,
       recurrenceLimit: existingProfile?.recurrenceLimit ?? 1,
     );
 
     if (_isEditing) {
-      await profileState.updateProfile(profile);
+      final ok = await profileState.updateProfile(profile);
+      if (!ok) {
+        if (!mounted) return;
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Profile name conflicts with an existing folder'),
+          ),
+        );
+        return;
+      }
     } else {
       await profileState.addProfile(profile);
       await profileState.setCurrentProfile(profile.id);
@@ -106,6 +127,20 @@ class _CredentialsPageState extends State<CredentialsPage> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+  }
+
+  String? _validateProfileName(ProfileState profileState) {
+    final trimmed = _nameController.text.trim();
+    if (trimmed.isEmpty) return null;
+
+    final sanitized = sanitizeProfileName(trimmed);
+    for (final profile in profileState.profiles) {
+      if (_isEditing && profile.id == _editingProfileId) continue;
+      if (sanitizeProfileName(profile.name) == sanitized) {
+        return 'Profile name conflicts with an existing folder name';
+      }
+    }
+    return null;
   }
 
   Future<void> _testServer() async {
@@ -153,7 +188,7 @@ class _CredentialsPageState extends State<CredentialsPage> {
       builder: (context) => AlertDialog(
         title: const Text('Delete Profile?'),
         content: const Text(
-          'This will remove the local profile and its associated task database.',
+          'This will permanently delete the profile and its task data from the current storage location.',
         ),
         actions: [
           TextButton(
@@ -266,8 +301,13 @@ class _CredentialsPageState extends State<CredentialsPage> {
                             prefixIcon: Icon(Icons.badge_outlined),
                             hintText: 'e.g., Work, Personal',
                           ),
-                          validator: (v) =>
-                              v!.trim().isEmpty ? 'Required' : null,
+                          validator: (v) {
+                            if (v == null || v.trim().isEmpty) return 'Required';
+                            final conflict = _validateProfileName(
+                              context.read<ProfileState>(),
+                            );
+                            return conflict;
+                          },
                         ),
                         const SizedBox(height: 16),
                         TextFormField(
