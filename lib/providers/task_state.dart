@@ -138,7 +138,6 @@ class TaskState extends ChangeNotifier {
 
       _taskManager = TaskManager();
       await _taskManager!.loadProfile(directoryPath: dbDir.path);
-      await _taskManager!.loadProfile(directoryPath: dbDirPath);
       await _taskManager!.setRecurrenceLimit(
         limit: BigInt.from(_recurrenceLimit),
       );
