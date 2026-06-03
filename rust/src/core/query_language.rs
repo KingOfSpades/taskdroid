@@ -756,11 +756,66 @@ fn merge_colon_tokens(tokens: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taskchampion::{
+        Operations, Replica, Status as TcStatus, StorageConfig, Uuid,
+    };
 
     fn parse_expr(query: &str) -> Option<Expr> {
         let tokens = merge_colon_tokens(tokenize(query));
         let mut parser = Parser::new(tokens);
         parser.parse()
+    }
+
+    fn task_with(fields: &[(&str, &str)]) -> taskchampion::Task {
+        use std::str::FromStr;
+        use taskchampion::Tag;
+
+        let mut replica = Replica::new(StorageConfig::InMemory.into_storage().unwrap());
+        let mut ops = Operations::new();
+        let uuid = Uuid::new_v4();
+        let mut task = replica.create_task(uuid, &mut ops).unwrap();
+        task.set_description("test task".into(), &mut ops).unwrap();
+        task.set_status(TcStatus::Pending, &mut ops).unwrap();
+        task.set_entry(Some(Utc::now()), &mut ops).unwrap();
+
+        for (key, value) in fields {
+            match *key {
+                "due" => {
+                    let dt = DateTime::parse_from_rfc3339(value).unwrap().with_timezone(&Utc);
+                    task.set_due(Some(dt), &mut ops).unwrap();
+                }
+                "wait" => {
+                    let dt = DateTime::parse_from_rfc3339(value).unwrap().with_timezone(&Utc);
+                    task.set_wait(Some(dt), &mut ops).unwrap();
+                }
+                "scheduled" => {
+                    let dt = DateTime::parse_from_rfc3339(value).unwrap().with_timezone(&Utc);
+                    task.set_value("scheduled", Some(dt.to_rfc3339()), &mut ops).unwrap();
+                }
+                "project" => {
+                    task.set_value("project", Some(value.to_string()), &mut ops).unwrap();
+                }
+                "priority" => task.set_priority(value.to_string(), &mut ops).unwrap(),
+                "tag" => {
+                    let tag: Tag = FromStr::from_str(value).unwrap();
+                    task.add_tag(&tag, &mut ops).unwrap();
+                }
+                "status" => {
+                    let status = match *value {
+                        "pending" => TcStatus::Pending,
+                        "completed" => TcStatus::Completed,
+                        "deleted" => TcStatus::Deleted,
+                        _ => panic!("unknown status: {value}"),
+                    };
+                    task.set_status(status, &mut ops).unwrap();
+                }
+                "description" => task.set_description(value.to_string(), &mut ops).unwrap(),
+                _ => {}
+            }
+        }
+
+        replica.commit_operations(ops).unwrap();
+        replica.get_task(uuid).unwrap().unwrap()
     }
 
     #[test]
@@ -826,5 +881,95 @@ mod tests {
                 other => panic!("expected non-pending status term for {query}, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn plus_due_matches_within_seven_day_window() {
+        let now = taskchampion::chrono::Utc::now();
+        let due_soon = task_with(&[("due", &format!("{}", (now + chrono::Duration::days(6)).format("%+"))), ("status", "pending")]);
+        let due_later = task_with(&[("due", &format!("{}", (now + chrono::Duration::days(8)).format("%+"))), ("status", "pending")]);
+
+        assert!(matches_query(&due_soon, "+DUE"), "task due within 7 days should match +DUE");
+        assert!(!matches_query(&due_later, "+DUE"), "task due after 7 days should not match +DUE");
+    }
+
+    #[test]
+    fn plus_ready_excludes_future_scheduled() {
+        let now = taskchampion::chrono::Utc::now();
+        let ready = task_with(&[("status", "pending")]);
+        let future = task_with(&[("scheduled", &format!("{}", (now + chrono::Duration::days(1)).format("%+"))), ("status", "pending")]);
+
+        assert!(matches_query(&ready, "+READY"), "pending task without schedule should be ready");
+        assert!(!matches_query(&future, "+READY"), "future scheduled task should not be ready");
+    }
+
+    #[test]
+    fn project_prefix_matching() {
+        let task = task_with(&[("project", "area.personal.sub"), ("status", "pending")]);
+
+        assert!(matches_query(&task, "project:area.personal"), "project prefix should match");
+        assert!(matches_query(&task, "project:area.personal.sub"), "exact project should match");
+        assert!(!matches_query(&task, "project:other"), "non-matching project should not match");
+    }
+
+    #[test]
+    fn tag_include_exclude() {
+        let task = task_with(&[("tag", "home"), ("tag", "work"), ("status", "pending")]);
+
+        assert!(matches_query(&task, "+home"), "include tag should match");
+        assert!(matches_query(&task, "+work"), "include tag should match");
+        assert!(!matches_query(&task, "+urgent"), "missing tag should not match");
+        assert!(!matches_query(&task, "+home -work"), "exclude tag should remove match");
+    }
+
+    #[test]
+    fn or_grouping_matches_either() {
+        let task_a = task_with(&[("tag", "work"), ("status", "pending")]);
+        let task_b = task_with(&[("project", "personal"), ("status", "pending")]);
+
+        assert!(matches_query(&task_a, "(+work or project:personal)"), "OR group should match first alternative");
+        assert!(matches_query(&task_b, "(+work or project:personal)"), "OR group should match second alternative");
+        assert!(!matches_query(&task_b, "(+home and +urgent)"), "AND group should require both");
+    }
+
+    #[test]
+    fn negation_inverts_match() {
+        let task = task_with(&[("tag", "home"), ("status", "pending")]);
+
+        assert!(!matches_query(&task, "-home"), "negation should invert tag match");
+        assert!(matches_query(&task, "-work"), "negation of absent tag should pass");
+    }
+
+    #[test]
+    fn status_term_matches_task_status() {
+        let done = task_with(&[("status", "completed")]);
+        let pending = task_with(&[("status", "pending")]);
+
+        assert!(matches_query(&done, "status:completed"), "completed task matches completed query");
+        assert!(matches_query(&done, "+COMPLETED"), "completed task matches +COMPLETED syntax");
+        assert!(!matches_query(&pending, "status:completed"), "pending task should not match completed query");
+    }
+
+    #[test]
+    fn invalid_query_falls_back_to_text_search() {
+        let task = task_with(&[("description", "due:not-a-date"), ("status", "pending")]);
+
+        assert!(matches_query(&task, "due:not-a-date"), "invalid date expression should fall back to text search");
+    }
+
+    #[test]
+    fn relative_date_expression_matches() {
+        let now = taskchampion::chrono::Utc::now();
+        let due_today = task_with(&[("due", &format!("{}", now.format("%+"))), ("status", "pending")]);
+
+        assert!(matches_query(&due_today, "due:today"), "due today should match due:today");
+    }
+
+    #[test]
+    fn plain_text_search() {
+        let task = task_with(&[("description", "buy groceries"), ("status", "pending")]);
+
+        assert!(matches_query(&task, "groceries"), "text search should match description");
+        assert!(!matches_query(&task, "electronics"), "missing text should not match");
     }
 }

@@ -147,7 +147,7 @@ void main() {
           home: Scaffold(
             body: TaskSearchAndFiltersRow(
               searchQuery: '',
-              parsedQuery: parseTaskQuery('', DateTime.utc(2026, 1, 10)),
+              parsedQuery: parseTaskQuery(''),
               onSearchChanged: (query) => changedQuery = query,
               allTags: const {},
               allProjects: const {'someday', 'software'},
@@ -192,7 +192,6 @@ void main() {
                   searchQuery: 'project:so',
                   parsedQuery: parseTaskQuery(
                     'project:so',
-                    DateTime.utc(2026, 1, 10),
                   ),
                   onSearchChanged: (_) {},
                   allTags: const {},

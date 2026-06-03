@@ -7,7 +7,6 @@ import 'package:taskdroid/models/profile.dart';
 import 'package:taskdroid/models/task_virtual_flags.dart';
 import 'package:taskdroid/services/calendar_service.dart';
 import 'package:taskdroid/services/profile_storage.dart';
-import 'package:taskdroid/services/task_filter_evaluator.dart';
 import 'package:taskdroid/services/task_query_language.dart';
 import 'package:taskdroid/src/rust/api.dart';
 import 'package:taskdroid/src/rust/frb_generated.dart';
@@ -18,6 +17,7 @@ enum TaskQueueView { ready, waiting, scheduled }
 class TaskState extends ChangeNotifier {
   TaskManager? _taskManager;
   List<TaskView> _allTasks = [];
+  List<TaskView> _allAutocompleteTasks = [];
   List<TaskView> _readyTasks = [];
   List<TaskView> _waitingTasks = [];
   List<TaskView> _scheduledTasks = [];
@@ -96,7 +96,8 @@ class TaskState extends ChangeNotifier {
 
   Set<String> get allTags {
     final tags = <String>{};
-    for (final task in _allTasks) {
+    final source = _allAutocompleteTasks.isNotEmpty ? _allAutocompleteTasks : _allTasks;
+    for (final task in source) {
       tags.addAll(task.tags);
     }
     return tags;
@@ -104,7 +105,8 @@ class TaskState extends ChangeNotifier {
 
   Set<String> get allProjects {
     final projects = <String>{};
-    for (final task in _allTasks) {
+    final source = _allAutocompleteTasks.isNotEmpty ? _allAutocompleteTasks : _allTasks;
+    for (final task in source) {
       if (task.project != null && task.project!.isNotEmpty) {
         projects.add(task.project!);
       }
@@ -115,7 +117,10 @@ class TaskState extends ChangeNotifier {
   Future<void> loadProfile(Profile profile) async {
     if (_taskManager != null && _currentProfileId == profile.id) {
       if (_readyTasks.isEmpty && !_isLoading) {
-        await refreshPendingTasks();
+        await Future.wait([
+          refreshPendingTasks(),
+          _refreshAutocompleteData(),
+        ]);
       }
       return;
     }
@@ -146,7 +151,10 @@ class TaskState extends ChangeNotifier {
 
       // Fix: Reset loading guard BEFORE refreshing tasks, else it instantly aborts
       _isLoading = false;
-      await refreshPendingTasks();
+      await Future.wait([
+        refreshPendingTasks(),
+        _refreshAutocompleteData(),
+      ]);
     } catch (e) {
       debugPrint('Failed to load profile: $e');
       _error = 'Unable to load profile database.';
@@ -166,11 +174,12 @@ class TaskState extends ChangeNotifier {
     notifyListeners();
 
     try {
+      final effectiveQuery = _buildFilterQuery();
       final filter = TaskFilter(
         status: null,
         project: null,
         tags: [],
-        searchTerm: _searchQuery.trim().isEmpty ? null : _searchQuery.trim(),
+        searchTerm: effectiveQuery.isEmpty ? null : effectiveQuery,
         offset: BigInt.from(0),
         limit: BigInt.from(5000),
       );
@@ -245,12 +254,89 @@ class TaskState extends ChangeNotifier {
     return filtered;
   }
 
+  Future<void> _refreshAutocompleteData() async {
+    if (_taskManager == null) return;
+    try {
+      final filter = TaskFilter(
+        status: null,
+        project: null,
+        tags: [],
+        searchTerm: null,
+        offset: BigInt.from(0),
+        limit: BigInt.from(5000),
+      );
+      final result = await _taskManager!.listTasks(filter: filter);
+      _allAutocompleteTasks = result.tasks;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Failed to refresh autocomplete data: $e');
+    }
+  }
+
+  String _buildFilterQuery() {
+    final parts = <String>[];
+    final incTags = includeTags;
+    final excTags = excludeTags;
+    final incProjs = includeProjects;
+    final excProjs = excludeProjects;
+
+    if (incTags.isNotEmpty) {
+      final quoted = incTags.map(_quoteToken);
+      if (tagMatchMode == FilterMatchMode.or) {
+        parts.add('(${quoted.map((t) => '+$t').join(' or ')})');
+      } else {
+        parts.addAll(quoted.map((t) => '+$t'));
+      }
+    }
+    for (final tag in excTags) {
+      parts.add('-${_quoteToken(tag)}');
+    }
+    if (incProjs.isNotEmpty) {
+      final quoted = incProjs.map(_quoteToken);
+      if (projectMatchMode == FilterMatchMode.or) {
+        parts.add('(${quoted.map((p) => 'project:$p').join(' or ')})');
+      } else {
+        parts.addAll(quoted.map((p) => 'project:$p'));
+      }
+    }
+    for (final project in excProjs) {
+      parts.add('-project:${_quoteToken(project)}');
+    }
+    final userQuery = _searchQuery.trim();
+    if (userQuery.isNotEmpty) parts.add(userQuery);
+    return parts.isEmpty ? '' : parts.join(' ');
+  }
+
+  // Quote token values for the Rust query parser.
+  // The tokenizer treats both " and ' as interchangeable delimiters.
+  // When both quote types appear (extremely rare for tag/project names),
+  // we normalize by replacing " with ' so the outer double quotes remain valid.
+  String _quoteToken(String raw) {
+    if (raw.contains(' ') ||
+        raw.contains('\t') ||
+        raw.contains(':') ||
+        raw.contains('(') ||
+        raw.contains(')')) {
+      if (raw.contains('"') && raw.contains("'")) {
+        return '"${raw.replaceAll('"', "'")}"';
+      }
+      if (raw.contains('"')) {
+        return "'$raw'";
+      }
+      return '"$raw"';
+    }
+    return raw;
+  }
+
+  @visibleForTesting
+  bool matchesTaskFilters(TaskView task) => _matchesTaskFilters(task, DateTime.now().toUtc());
+
   TaskQuery _getParsedSearchQuery() {
     final query = _searchQuery;
     if (_parsedSearchQuery != null && _lastParsedSearchQuery == query) {
       return _parsedSearchQuery!;
     }
-    final parsed = parseTaskQuery(query, DateTime.now().toUtc());
+    final parsed = parseTaskQuery(query);
     _lastParsedSearchQuery = query;
     _parsedSearchQuery = parsed;
     return parsed;
@@ -262,23 +348,40 @@ class TaskState extends ChangeNotifier {
   }
 
   bool _matchesTaskFilters(TaskView task, DateTime nowUtc) {
-    return matchesTaskFilter(
-      task,
-      TaskFilterCriteria(
-        includeTags: includeTags,
-        excludeTags: excludeTags,
-        tagMatchMode: tagMatchMode,
-        includeProjects: includeProjects,
-        excludeProjects: excludeProjects,
-        projectMatchMode: projectMatchMode,
-        includeStatuses: const <TaskStatus>{},
-        excludeStatuses: const <TaskStatus>{},
-        includeFlags: const <TaskVirtualFlag>{},
-        excludeFlags: const <TaskVirtualFlag>{},
-        flagMatchMode: FilterMatchMode.and,
-      ),
-      nowUtc,
-    );
+    final taskTags = task.tags.map((t) => t.toLowerCase()).toSet();
+    final incTags = includeTags;
+    if (incTags.isNotEmpty) {
+      if (tagMatchMode == FilterMatchMode.or) {
+        if (!incTags.any((t) => taskTags.contains(t.toLowerCase()))) return false;
+      } else {
+        if (!incTags.every((t) => taskTags.contains(t.toLowerCase()))) return false;
+      }
+    }
+    for (final tag in excludeTags) {
+      if (taskTags.contains(tag.toLowerCase())) return false;
+    }
+    final incProjs = includeProjects;
+    if (incProjs.isNotEmpty) {
+      final project = task.project;
+      if (project == null || project.isEmpty) return false;
+      final lowerProject = project.toLowerCase();
+      if (projectMatchMode == FilterMatchMode.or) {
+        if (!incProjs.any((p) => lowerProject == p.toLowerCase() || lowerProject.startsWith('${p.toLowerCase()}.'))) return false;
+      } else {
+        if (!incProjs.every((p) => lowerProject == p.toLowerCase() || lowerProject.startsWith('${p.toLowerCase()}.'))) return false;
+      }
+    }
+    for (final proj in excludeProjects) {
+      final project = task.project;
+      if (project != null) {
+        final lowerProject = project.toLowerCase();
+        final lowerProj = proj.toLowerCase();
+        if (lowerProject == lowerProj || lowerProject.startsWith('$lowerProj.')) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   void setQueueView(TaskQueueView view) {
@@ -341,6 +444,7 @@ class TaskState extends ChangeNotifier {
         ),
       );
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
 
       if (_isCalendarSyncEnabled) {
         final newTask = await _taskManager!.getTask(uuidStr: uuid);
@@ -358,6 +462,7 @@ class TaskState extends ChangeNotifier {
       await _taskManager!.doneTasks(uuidStrs: [uuid]);
       if (_isCalendarSyncEnabled) await _calendarService.deleteTask(uuid);
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
       return null;
     } catch (e) {
       return e.toString();
@@ -370,6 +475,7 @@ class TaskState extends ChangeNotifier {
       await _taskManager!.deleteTasks(uuidStrs: [uuid]);
       if (_isCalendarSyncEnabled) await _calendarService.deleteTask(uuid);
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
       return null;
     } catch (e) {
       return e.toString();
@@ -382,6 +488,7 @@ class TaskState extends ChangeNotifier {
       await _taskManager!.deleteTaskSingle(uuidStr: uuid);
       if (_isCalendarSyncEnabled) await _calendarService.deleteTask(uuid);
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
       return null;
     } catch (e) {
       return e.toString();
@@ -394,6 +501,7 @@ class TaskState extends ChangeNotifier {
       await _taskManager!.deleteTaskSeries(uuidStr: uuid);
       if (_isCalendarSyncEnabled) await _calendarService.deleteTask(uuid);
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
       return null;
     } catch (e) {
       return e.toString();
@@ -406,6 +514,7 @@ class TaskState extends ChangeNotifier {
       await _taskManager!.doneTaskSingle(uuidStr: uuid);
       if (_isCalendarSyncEnabled) await _calendarService.deleteTask(uuid);
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
       return null;
     } catch (e) {
       return e.toString();
@@ -438,6 +547,7 @@ class TaskState extends ChangeNotifier {
         ),
       );
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
 
       if (_isCalendarSyncEnabled) {
         final updated = await _taskManager!.getTask(uuidStr: uuid);
@@ -482,6 +592,7 @@ class TaskState extends ChangeNotifier {
       final success = await _taskManager!.undo();
       if (success) {
         await refreshPendingTasks();
+        await _refreshAutocompleteData();
         return null;
       }
       return 'Nothing to undo';
@@ -520,6 +631,7 @@ class TaskState extends ChangeNotifier {
       }
       clearSelection();
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
       return null;
     } catch (e) {
       return 'Bulk operation failed';
@@ -542,6 +654,7 @@ class TaskState extends ChangeNotifier {
       }
       clearSelection();
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
       return null;
     } catch (e) {
       return 'Bulk delete failed';
@@ -615,6 +728,7 @@ class TaskState extends ChangeNotifier {
     _tagMatchMode ??= FilterMatchMode.and;
     _cachedFilteredTasks = null;
     _scheduleTabUpdate();
+    _scheduleQueryRefresh();
     notifyListeners();
   }
 
@@ -630,6 +744,7 @@ class TaskState extends ChangeNotifier {
     _projectMatchMode ??= FilterMatchMode.and;
     _cachedFilteredTasks = null;
     _scheduleTabUpdate();
+    _scheduleQueryRefresh();
     notifyListeners();
   }
 
@@ -647,6 +762,7 @@ class TaskState extends ChangeNotifier {
     _tagMatchMode ??= FilterMatchMode.and;
     _cachedFilteredTasks = null;
     _scheduleTabUpdate();
+    _scheduleQueryRefresh();
     notifyListeners();
   }
 
@@ -664,6 +780,7 @@ class TaskState extends ChangeNotifier {
     _projectMatchMode ??= FilterMatchMode.and;
     _cachedFilteredTasks = null;
     _scheduleTabUpdate();
+    _scheduleQueryRefresh();
     notifyListeners();
   }
 
@@ -677,6 +794,7 @@ class TaskState extends ChangeNotifier {
     _tagMatchMode = mode;
     _cachedFilteredTasks = null;
     _scheduleTabUpdate();
+    _scheduleQueryRefresh();
     notifyListeners();
   }
 
@@ -690,6 +808,7 @@ class TaskState extends ChangeNotifier {
     _projectMatchMode = mode;
     _cachedFilteredTasks = null;
     _scheduleTabUpdate();
+    _scheduleQueryRefresh();
     notifyListeners();
   }
 
@@ -899,16 +1018,16 @@ class TaskState extends ChangeNotifier {
   Future<int> getTotalTaskCount() async {
     if (_taskManager == null) return 0;
     try {
-      final result = await _taskManager!.listTasks(
-        filter: TaskFilter(
-          status: null,
-          tags: [],
-          searchTerm: null,
-          project: null,
-          offset: BigInt.from(0),
-          limit: BigInt.from(1),
-        ),
+      final effectiveQuery = _buildFilterQuery();
+      final filter = TaskFilter(
+        status: null,
+        project: null,
+        tags: [],
+        searchTerm: effectiveQuery.isEmpty ? null : effectiveQuery,
+        offset: BigInt.from(0),
+        limit: BigInt.from(1),
       );
+      final result = await _taskManager!.listTasks(filter: filter);
       return result.totalCount.toInt();
     } catch (_) {
       return _readyTasks.length + _waitingTasks.length;
@@ -921,6 +1040,7 @@ class TaskState extends ChangeNotifier {
     _waitingTasks = [];
     _scheduledTasks = [];
     _allTasks = [];
+    _allAutocompleteTasks = [];
     _taskByUuid.clear();
     _queueView = TaskQueueView.ready;
     _currentProfileId = null;
@@ -958,6 +1078,7 @@ class TaskState extends ChangeNotifier {
       if (!result.success) return result.error;
 
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
       return null;
     } catch (e) {
       return e.toString();
@@ -977,6 +1098,7 @@ class TaskState extends ChangeNotifier {
     try {
       await _taskManager!.importTasks(jsonData: jsonData);
       await refreshPendingTasks();
+      await _refreshAutocompleteData();
       return null;
     } catch (e) {
       return e.toString();
