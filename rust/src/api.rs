@@ -6,7 +6,6 @@ use flutter_rust_bridge::frb;
 use serde::{Deserialize, Serialize};
 
 /// FRB-facing task status enum
-#[frb]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TaskStatus {
     Pending,
@@ -37,7 +36,6 @@ impl From<TaskStatus> for CoreTaskStatus {
     }
 }
 
-#[frb]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskAnnotation {
     pub entry: String,
@@ -62,7 +60,6 @@ impl From<TaskAnnotation> for core::TaskAnnotation {
     }
 }
 
-#[frb]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UdaPair {
     pub key: String,
@@ -88,7 +85,6 @@ impl From<UdaPair> for core::UdaPair {
 }
 
 /// UI-friendly task DTO exposed to Flutter.
-#[frb]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskView {
     pub uuid: String,
@@ -195,7 +191,6 @@ impl From<TaskView> for TaskSnapshot {
     }
 }
 
-#[frb]
 #[derive(Debug, Clone)]
 pub struct TaskFilter {
     pub status: Option<TaskStatus>,
@@ -217,7 +212,6 @@ impl From<TaskFilter> for core::TaskFilter {
     }
 }
 
-#[frb]
 #[derive(Debug, Clone)]
 pub struct TaskListResult {
     pub tasks: Vec<TaskView>,
@@ -235,7 +229,6 @@ impl From<CoreQueryResult> for TaskListResult {
     }
 }
 
-#[frb]
 #[derive(Debug, Clone)]
 pub struct CreateTaskParams {
     pub description: String,
@@ -276,7 +269,6 @@ impl From<CreateTaskParams> for core::CreateTaskParams {
     }
 }
 
-#[frb]
 #[derive(Debug, Clone)]
 pub struct UpdateTaskParams {
     pub description: Option<String>,
@@ -355,7 +347,6 @@ pub struct TaskManager {
     inner: core::TaskManager,
 }
 
-#[frb]
 impl TaskManager {
     #[frb(sync)]
     pub fn new() -> TaskManager {
